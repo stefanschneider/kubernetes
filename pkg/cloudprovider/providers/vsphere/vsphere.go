@@ -441,7 +441,7 @@ func (vs *VSphere) ScrubDNS(nameservers, searches []string) (nsOut, srchOut []st
 }
 
 // Attaches given virtual disk volume to the compute running kubelet.
-func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string, err error) {
+func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string, diskUUID string, err error) {
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -449,7 +449,7 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 	// Create vSphere client
 	c, err := vsphereLogin(vs.cfg, ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer c.Logout(ctx)
 
@@ -459,14 +459,14 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 	// Fetch and set data center
 	dc, err := f.Datacenter(ctx, vs.cfg.Global.Datacenter)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	f.SetDatacenter(dc)
 
 	// Find datastores
 	ds, err := f.Datastore(ctx, vs.cfg.Global.Datastore)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Find virtual machine to attach disk to
@@ -478,13 +478,13 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 	}
 	vm, err := f.VirtualMachine(ctx, vSphereInstance)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Attach disk to the running VM
 	vmDevices, err := vm.Device(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	diskController, err := vmDevices.FindDiskController(vs.cfg.Disk.DiskController)
@@ -492,7 +492,7 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 		if err.Error() == "no available SCSI controller" {
 			newSCSIController, err := vmDevices.CreateSCSIController(vs.cfg.Disk.SCSIControllerType)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 
 			configNewSCSIController := newSCSIController.(types.BaseVirtualSCSIController).GetVirtualSCSIController()
@@ -501,18 +501,18 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 			configNewSCSIController.SharedBus = types.VirtualSCSISharing(types.VirtualSCSISharingNoSharing)
 			err = vm.AddDevice(context.TODO(), newSCSIController)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			vmDevices, err = vm.Device(ctx)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			diskController, err = vmDevices.FindDiskController(vs.cfg.Disk.DiskController)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 		} else {
-			return "", err
+			return "", "", err
 		}
 	}
 
@@ -523,16 +523,30 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 
 	err = vm.AddDevice(ctx, disk)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	vmDevices, err = vm.Device(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	devices := vmDevices.SelectByType(disk)
-	return devices.Name(devices[len(devices)-1]), nil
+	newDevice := devices[len(devices)-1]
+
+	deviceUuid := getVirtualDiskUuid(newDevice)
+
+	return devices.Name(devices[len(devices)-1]), deviceUuid, nil
+}
+
+func getVirtualDiskUuid(newDevice types.BaseVirtualDevice) string {
+	vd := newDevice.GetVirtualDevice()
+
+	if b, ok := vd.Backing.(*types.VirtualDiskFlatVer2BackingInfo); ok {
+		uuidWithNoHypens := strings.Replace(b.Uuid, "-", "", -1)
+		return uuidWithNoHypens
+	}
+	return ""
 }
 
 // Detaches given virtual disk volume from the compute running kubelet.
