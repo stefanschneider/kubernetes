@@ -53,13 +53,13 @@ type VSphere struct {
 
 type VSphereConfig struct {
 	Global struct {
-		User          string `gcfg:"user"`
-		Password      string `gcfg:"password"`
-		VCenterIP     string `gcfg:"server"`
-		VCenterPort   string `gcfg:"port"`
-		InsecureFlag  bool   `gcfg:"insecure-flag"`
-		Datacenter    string `gcfg:"datacenter"`
-		Datastore     string `gcfg:"datastore"`
+		User         string `gcfg:"user"`
+		Password     string `gcfg:"password"`
+		VCenterIP    string `gcfg:"server"`
+		VCenterPort  string `gcfg:"port"`
+		InsecureFlag bool   `gcfg:"insecure-flag"`
+		Datacenter   string `gcfg:"datacenter"`
+		Datastore    string `gcfg:"datastore"`
 	}
 
 	Network struct {
@@ -459,21 +459,27 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 	// Fetch and set data center
 	dc, err := f.Datacenter(ctx, vs.cfg.Global.Datacenter)
 	if err != nil {
- 		return "", err
- 	}
+		return "", err
+	}
 	f.SetDatacenter(dc)
 
 	// Find datastores
 	ds, err := f.Datastore(ctx, vs.cfg.Global.Datastore)
 	if err != nil {
- 		return "", err
- 	}
+		return "", err
+	}
 
 	// Find virtual machine to attach disk to
-	vm, err := f.VirtualMachine(ctx, nodeName)
- 	if err != nil {
- 		return "", err
- 	}
+	var vSphereInstance string
+	if nodeName == "" {
+		vSphereInstance = vs.localInstanceID
+	} else {
+		vSphereInstance = nodeName
+	}
+	vm, err := f.VirtualMachine(ctx, vSphereInstance)
+	if err != nil {
+		return "", err
+	}
 
 	// Attach disk to the running VM
 	vmDevices, err := vm.Device(ctx)
@@ -494,6 +500,10 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 			configNewSCSIController.HotAddRemove = &hotAndRemove
 			configNewSCSIController.SharedBus = types.VirtualSCSISharing(types.VirtualSCSISharingNoSharing)
 			err = vm.AddDevice(context.TODO(), newSCSIController)
+			if err != nil {
+				return "", err
+			}
+			vmDevices, err = vm.Device(ctx)
 			if err != nil {
 				return "", err
 			}
@@ -546,10 +556,16 @@ func (vs *VSphere) DetachDisk(diskID string, nodeName string) error {
 	f.SetDatacenter(dc)
 
 	// Find VM to detach disk from
-	vm, err := f.VirtualMachine(ctx, nodeName)
- 	if err != nil {
- 		return err
- 	}
+	var vSphereInstance string
+	if nodeName == "" {
+		vSphereInstance = vs.localInstanceID
+	} else {
+		vSphereInstance = nodeName
+	}
+	vm, err := f.VirtualMachine(ctx, vSphereInstance)
+	if err != nil {
+		return err
+	}
 
 	// Get devices from VM
 	vmDevices, err := vm.Device(ctx)
@@ -599,7 +615,7 @@ func (vs *VSphere) CreateVolume(name string, size int, tags *map[string]string) 
 	vmDiskSpec := &types.FileBackedVirtualDiskSpec{
 		VirtualDiskSpec: types.VirtualDiskSpec{
 			AdapterType: (*tags)["adapterType"],
-			DiskType: (*tags)["diskType"],
+			DiskType:    (*tags)["diskType"],
 		},
 		CapacityKb: int64(size),
 	}
