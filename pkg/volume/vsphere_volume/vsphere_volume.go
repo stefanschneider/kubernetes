@@ -19,6 +19,7 @@ package vsphere_volume
 import (
 	"errors"
 	"fmt"
+	"path"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
@@ -94,8 +95,8 @@ func (plugin *vsphereVolumePlugin) newMounterInternal(spec *volume.Spec, podUID 
 			mounter: mounter,
 			plugin:  plugin,
 		},
-		fsType:             fsType,
-		blockDeviceMounter: &mount.SafeFormatAndMount{Interface: mounter, Runner: exec.New()}}, nil
+		fsType:      fsType,
+		diskMounter: &mount.SafeFormatAndMount{Interface: mounter, Runner: exec.New()}}, nil
 }
 
 func (plugin *vsphereVolumePlugin) newUnmounterInternal(volName string, podUID types.UID, manager cdManager, mounter mount.Interface) (volume.Unmounter, error) {
@@ -143,13 +144,15 @@ type vsphereVolume struct {
 	pdName string
 	// Filesystem type, optional.
 	fsType string
+	//diskID for detach disk
+	diskID string
 	// Utility interface that provides API calls to the provider to attach/detach disks.
 	manager cdManager
 	// Mounter interface that provides system calls to mount the global path to the pod local path.
 	mounter mount.Interface
 	// diskMounter provides the interface that is used to mount the actual block device.
-	blockDeviceMounter mount.Interface
-	plugin             *vsphereVolumePlugin
+	diskMounter mount.Interface
+	plugin      *vsphereVolumePlugin
 	volume.MetricsNil
 }
 
@@ -157,8 +160,8 @@ var _ volume.Mounter = &vsphereVolumeMounter{}
 
 type vsphereVolumeMounter struct {
 	*vsphereVolume
-	fsType             string
-	blockDeviceMounter *mount.SafeFormatAndMount
+	fsType      string
+	diskMounter *mount.SafeFormatAndMount
 }
 
 func (b *vsphereVolumeMounter) GetAttributes() volume.Attributes {
@@ -188,6 +191,10 @@ func (c *vsphereVolumeUnmounter) TearDown() error {
 
 func (c *vsphereVolumeUnmounter) TearDownAt(dir string) error {
 	return nil
+}
+
+func makeGlobalPDPath(host volume.VolumeHost, devName string) string {
+	return path.Join(host.GetPluginDir(vsphereVolumePluginName), "mounts", devName)
 }
 
 func (cd *vsphereVolume) GetPath() string {

@@ -16,20 +16,169 @@ limitations under the License.
 
 package vsphere_volume
 
+import (
+	"errors"
+	"io/ioutil"
+	"os"
+	"path"
+	"strings"
+
+	"github.com/golang/glog"
+	"k8s.io/kubernetes/pkg/util/exec"
+	"k8s.io/kubernetes/pkg/volume"
+)
+
+const (
+	maxRetries = 10
+)
+
 type VsphereDiskUtil struct{}
 
-func (util *VsphereDiskUtil) AttachDisk(b *vsphereVolumeMounter, globalPDPath string) error {
+// Attaches a disk to the current kubelet.
+// Mounts the disk to it's global path.
+func (util *VsphereDiskUtil) AttachDisk(vm *vsphereVolumeMounter, globalPDPath string) error {
+	options := []string{}
+
+	cloud, err := vm.plugin.getCloudProvider()
+	if err != nil {
+		return err
+	}
+
+	diskID, diskUUID, attachError := cloud.AttachDisk(vm.pdName, "")
+	if attachError != nil {
+		return err
+	} else if diskUUID == "" {
+		return errors.New("Disk UUID has no value")
+	}
+
+	// diskID for detach Disk
+	vm.diskID = diskID
+
+	var devicePath string
+	numTries := 0
+	for {
+		devicePath = verifyDevicePath(diskUUID)
+		// probe the attached vol so that symlink in /dev/disk/by-id is created
+		probeAttachedVolume()
+
+		_, err := os.Stat(devicePath)
+		if err == nil {
+			break
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		numTries++
+		if numTries == maxRetries {
+			return errors.New("Could not attach disk: Timeout after 60s")
+		}
+	}
+
+	notMnt, err := vm.mounter.IsLikelyNotMountPoint(globalPDPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(globalPDPath, 0750); err != nil {
+				return err
+			}
+			notMnt = true
+		} else {
+			return err
+		}
+	}
+	if notMnt {
+		err = vm.diskMounter.FormatAndMount(devicePath, globalPDPath, vm.fsType, options)
+		if err != nil {
+			os.Remove(globalPDPath)
+			return err
+		}
+		glog.V(2).Infof("Safe mount successful: %q\n", devicePath)
+	}
 	return nil
 }
 
-func (util *VsphereDiskUtil) DetachDisk(cd *vsphereVolumeUnmounter) error {
+func verifyDevicePath(diskUUID string) string {
+	files, _ := ioutil.ReadDir("/dev/disk/by-id/")
+	for _, f := range files {
+		// TODO: should support other controllers
+		if strings.Contains(f.Name(), "scsi-") {
+			devID := f.Name()[len("scsi-"):len(f.Name())]
+			if strings.Contains(diskUUID, devID) {
+				glog.V(4).Infof("Found disk attached as %q; full devicepath: %s\n", f.Name(), path.Join("/dev/disk/by-id/", f.Name()))
+				return path.Join("/dev/disk/by-id/", f.Name())
+			}
+		}
+	}
+	glog.Warningf("Failed to find device for the diskid: %q\n", diskUUID)
+	return ""
+}
+
+func probeAttachedVolume() error {
+	executor := exec.New()
+	args := []string{"trigger"}
+	cmd := executor.Command("/usr/bin/udevadm", args...)
+	_, err := cmd.CombinedOutput()
+	if err != nil {
+		glog.Errorf("error running udevadm trigger %v\n", err)
+		return err
+	}
+	glog.V(4).Infof("Successfully probed all attachments")
 	return nil
 }
 
-func (util *VsphereDiskUtil) CreateVolume(c *vsphereVolumeProvisioner) (volumeID string, volumeSizeGB int, err error) {
-	return "", 0, nil
+// Unmounts the device and detaches the disk from the kubelet's host machine.
+func (util *VsphereDiskUtil) DetachDisk(vu *vsphereVolumeUnmounter) error {
+	globalPDPath := makeGlobalPDPath(vu.plugin.host, vu.pdName)
+	if err := vu.mounter.Unmount(globalPDPath); err != nil {
+		return err
+	}
+	if err := os.Remove(globalPDPath); err != nil {
+		return err
+	}
+	glog.V(2).Infof("Successfully unmounted main device: %s\n", globalPDPath)
+
+	cloud, err := vu.plugin.getCloudProvider()
+	if err != nil {
+		return err
+	}
+
+	if err = cloud.DetachDisk(vu.diskID, ""); err != nil {
+		return err
+	}
+	glog.V(2).Infof("Successfully detached vSphere volume %s", vu.pdName)
+	return nil
 }
 
-func (util *VsphereDiskUtil) DeleteVolume(cd *vsphereVolumeDeleter) error {
+// CreateVolume creates a vSphere volume.
+func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner) (volumeID string, volumeSizeKB int, err error) {
+	cloud, err := v.plugin.getCloudProvider()
+	if err != nil {
+		return "", 0, err
+	}
+
+	volSizeBytes := v.options.Capacity.Value()
+	// vSphere works with kilobytes, convert to KiB with rounding up
+	volSizeKB := int(volume.RoundUpSize(volSizeBytes, 1024))
+	name := volume.GenerateVolumeName(v.options.ClusterName, v.options.PVName, 255)
+	name, err = cloud.CreateVolume(name, volSizeKB, v.options.CloudTags)
+	if err != nil {
+		glog.V(2).Infof("Error creating vsphere volume: %v", err)
+		return "", 0, err
+	}
+	glog.V(2).Infof("Successfully created vsphere volume %s", name)
+	return name, volSizeKB, nil
+}
+
+// DeleteVolume deletes a vSphere volume.
+func (util *VsphereDiskUtil) DeleteVolume(vd *vsphereVolumeDeleter) error {
+	cloud, err := vd.plugin.getCloudProvider()
+	if err != nil {
+		return err
+	}
+
+	if err = cloud.DeleteVolume(vd.pdName); err != nil {
+		glog.V(2).Infof("Error deleting vsphere volume %s: %v", vd.pdName, err)
+		return err
+	}
+	glog.V(2).Infof("Successfully deleted vsphere volume %s", vd.pdName)
 	return nil
 }

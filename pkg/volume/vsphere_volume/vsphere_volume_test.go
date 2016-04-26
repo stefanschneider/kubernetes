@@ -21,9 +21,10 @@ import (
 	"os"
 	"path"
 	"testing"
-	"time"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/types"
+	"k8s.io/kubernetes/pkg/util/mount"
 	utiltesting "k8s.io/kubernetes/pkg/util/testing"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
@@ -56,7 +57,8 @@ func TestCanSupport(t *testing.T) {
 }
 
 type fakePDManager struct {
-	attachDetachDuration time.Duration
+	attachCalled bool
+	detachCalled bool
 }
 
 func getFakeDeviceName(host volume.VolumeHost, pdName string) string {
@@ -64,15 +66,52 @@ func getFakeDeviceName(host volume.VolumeHost, pdName string) string {
 }
 
 func (fake *fakePDManager) AttachDisk(b *vsphereVolumeMounter, globalPDPath string) error {
+	globalPath := makeGlobalPDPath(b.plugin.host, b.pdName)
+	fakeDeviceName := getFakeDeviceName(b.plugin.host, b.pdName)
+	err := os.MkdirAll(fakeDeviceName, 0750)
+	if err != nil {
+		return err
+	}
+
+	// The volume is "attached", bind-mount it if it's not mounted yet.
+	notmnt, err := b.mounter.IsLikelyNotMountPoint(globalPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(globalPath, 0750); err != nil {
+				return err
+			}
+			notmnt = true
+		} else {
+			return err
+		}
+	}
+	if notmnt {
+		err = b.mounter.Mount(fakeDeviceName, globalPath, "", []string{"bind"})
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (fake *fakePDManager) DetachDisk(c *vsphereVolumeUnmounter) error {
+	globalPath := makeGlobalPDPath(c.plugin.host, c.pdName)
+	fakeDeviceName := getFakeDeviceName(c.plugin.host, c.pdName)
+	err := c.mounter.Unmount(globalPath)
+	if err != nil {
+		return err
+	}
+
+	// "Detach" the fake "device"
+	err = os.RemoveAll(fakeDeviceName)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
-func (fake *fakePDManager) CreateVolume(c *vsphereVolumeProvisioner) (volumeID string, volumeSizeGB int, err error) {
-	return "test-volume-name", 1, nil
+func (fake *fakePDManager) CreateVolume(c *vsphereVolumeProvisioner) (volumeID string, volumeSizeKB int, err error) {
+	return "test-volume-name", 1024 * 1024, nil
 }
 
 func (fake *fakePDManager) DeleteVolume(cd *vsphereVolumeDeleter) error {
