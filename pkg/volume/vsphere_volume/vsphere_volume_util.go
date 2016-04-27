@@ -25,12 +25,16 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/util/exec"
+	"k8s.io/kubernetes/pkg/util/keymutex"
 	"k8s.io/kubernetes/pkg/volume"
 )
 
 const (
 	maxRetries = 10
 )
+
+// Singleton key mutex for keeping attach/detach operations for the same PD atomic
+var attachDetachMutex = keymutex.NewKeyMutex()
 
 type VsphereDiskUtil struct{}
 
@@ -39,12 +43,16 @@ type VsphereDiskUtil struct{}
 func (util *VsphereDiskUtil) AttachDisk(vm *vsphereVolumeMounter, globalPDPath string) error {
 	options := []string{}
 
+	// Block execution until any pending detach operations for this PD have completed
+	attachDetachMutex.LockKey(vm.volPath)
+	defer attachDetachMutex.UnlockKey(vm.volPath)
+
 	cloud, err := vm.plugin.getCloudProvider()
 	if err != nil {
 		return err
 	}
 
-	diskID, diskUUID, attachError := cloud.AttachDisk(vm.pdName, "")
+	diskID, diskUUID, attachError := cloud.AttachDisk(vm.volPath, "")
 	if attachError != nil {
 		return err
 	} else if diskUUID == "" {
@@ -127,7 +135,7 @@ func probeAttachedVolume() error {
 
 // Unmounts the device and detaches the disk from the kubelet's host machine.
 func (util *VsphereDiskUtil) DetachDisk(vu *vsphereVolumeUnmounter) error {
-	globalPDPath := makeGlobalPDPath(vu.plugin.host, vu.pdName)
+	globalPDPath := makeGlobalPDPath(vu.plugin.host, vu.volPath)
 	if err := vu.mounter.Unmount(globalPDPath); err != nil {
 		return err
 	}
@@ -144,12 +152,12 @@ func (util *VsphereDiskUtil) DetachDisk(vu *vsphereVolumeUnmounter) error {
 	if err = cloud.DetachDisk(vu.diskID, ""); err != nil {
 		return err
 	}
-	glog.V(2).Infof("Successfully detached vSphere volume %s", vu.pdName)
+	glog.V(2).Infof("Successfully detached vSphere volume %s", vu.volPath)
 	return nil
 }
 
 // CreateVolume creates a vSphere volume.
-func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner) (volumeID string, volumeSizeKB int, err error) {
+func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner) (vmDiskPath string, volumeSizeKB int, err error) {
 	cloud, err := v.plugin.getCloudProvider()
 	if err != nil {
 		return "", 0, err
@@ -159,13 +167,13 @@ func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner) (volumeID
 	// vSphere works with kilobytes, convert to KiB with rounding up
 	volSizeKB := int(volume.RoundUpSize(volSizeBytes, 1024))
 	name := volume.GenerateVolumeName(v.options.ClusterName, v.options.PVName, 255)
-	name, err = cloud.CreateVolume(name, volSizeKB, v.options.CloudTags)
+	vmDiskPath, err = cloud.CreateVolume(name, volSizeKB, v.options.CloudTags)
 	if err != nil {
 		glog.V(2).Infof("Error creating vsphere volume: %v", err)
 		return "", 0, err
 	}
 	glog.V(2).Infof("Successfully created vsphere volume %s", name)
-	return name, volSizeKB, nil
+	return vmDiskPath, volSizeKB, nil
 }
 
 // DeleteVolume deletes a vSphere volume.
@@ -175,10 +183,10 @@ func (util *VsphereDiskUtil) DeleteVolume(vd *vsphereVolumeDeleter) error {
 		return err
 	}
 
-	if err = cloud.DeleteVolume(vd.pdName); err != nil {
-		glog.V(2).Infof("Error deleting vsphere volume %s: %v", vd.pdName, err)
+	if err = cloud.DeleteVolume(vd.volPath); err != nil {
+		glog.V(2).Infof("Error deleting vsphere volume %s: %v", vd.volPath, err)
 		return err
 	}
-	glog.V(2).Infof("Successfully deleted vsphere volume %s", vd.pdName)
+	glog.V(2).Infof("Successfully deleted vsphere volume %s", vd.volPath)
 	return nil
 }

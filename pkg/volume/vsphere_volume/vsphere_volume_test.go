@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util/mount"
 	utiltesting "k8s.io/kubernetes/pkg/util/testing"
@@ -61,66 +62,164 @@ type fakePDManager struct {
 	detachCalled bool
 }
 
-func getFakeDeviceName(host volume.VolumeHost, pdName string) string {
-	return path.Join(host.GetPluginDir(vsphereVolumePluginName), "device", pdName)
+func getFakeDeviceName(host volume.VolumeHost, volPath string) string {
+	return path.Join(host.GetPluginDir(vsphereVolumePluginName), "device", volPath)
 }
 
 func (fake *fakePDManager) AttachDisk(b *vsphereVolumeMounter, globalPDPath string) error {
-	globalPath := makeGlobalPDPath(b.plugin.host, b.pdName)
-	fakeDeviceName := getFakeDeviceName(b.plugin.host, b.pdName)
+	fakeDeviceName := getFakeDeviceName(b.plugin.host, b.volPath)
 	err := os.MkdirAll(fakeDeviceName, 0750)
 	if err != nil {
 		return err
 	}
-
-	// The volume is "attached", bind-mount it if it's not mounted yet.
-	notmnt, err := b.mounter.IsLikelyNotMountPoint(globalPath)
+	fake.attachCalled = true
+	// Simulate the global mount so that the fakeMounter returns the
+	// expected number of mounts for the attached disk.
+	err = b.mounter.Mount(fakeDeviceName, globalPDPath, "", []string{"bind"})
 	if err != nil {
-		if os.IsNotExist(err) {
-			if err := os.MkdirAll(globalPath, 0750); err != nil {
-				return err
-			}
-			notmnt = true
-		} else {
-			return err
-		}
-	}
-	if notmnt {
-		err = b.mounter.Mount(fakeDeviceName, globalPath, "", []string{"bind"})
-		if err != nil {
-			return err
-		}
+		return err
 	}
 	return nil
 }
 
-func (fake *fakePDManager) DetachDisk(c *vsphereVolumeUnmounter) error {
-	globalPath := makeGlobalPDPath(c.plugin.host, c.pdName)
-	fakeDeviceName := getFakeDeviceName(c.plugin.host, c.pdName)
-	err := c.mounter.Unmount(globalPath)
+func (fake *fakePDManager) DetachDisk(v *vsphereVolumeUnmounter) error {
+	globalPath := makeGlobalPDPath(v.plugin.host, v.volPath)
+	fakeDeviceName := getFakeDeviceName(v.plugin.host, v.volPath)
+	err := v.mounter.Unmount(globalPath)
 	if err != nil {
 		return err
 	}
-
 	// "Detach" the fake "device"
 	err = os.RemoveAll(fakeDeviceName)
 	if err != nil {
 		return err
 	}
+	fake.detachCalled = true
 	return nil
 }
 
-func (fake *fakePDManager) CreateVolume(c *vsphereVolumeProvisioner) (volumeID string, volumeSizeKB int, err error) {
-	return "test-volume-name", 1024 * 1024, nil
+func (fake *fakePDManager) CreateVolume(v *vsphereVolumeProvisioner) (vmDiskPath string, volumeSizeKB int, err error) {
+	return "[local] test-volume-name.vmdk", 100, nil
 }
 
-func (fake *fakePDManager) DeleteVolume(cd *vsphereVolumeDeleter) error {
-	if cd.pdName != "test-volume-name" {
-		return fmt.Errorf("Deleter got unexpected volume name: %s", cd.pdName)
+func (fake *fakePDManager) DeleteVolume(vd *vsphereVolumeDeleter) error {
+	if vd.volPath != "[local] test-volume-name.vmdk" {
+		return fmt.Errorf("Deleter got unexpected volume path: %s", vd.volPath)
 	}
 	return nil
 }
 
 func TestPlugin(t *testing.T) {
+	// Initial setup to test volume plugin
+	tmpDir, err := utiltesting.MkTmpdir("vsphereVolumeTest")
+	if err != nil {
+		t.Fatalf("can't make a temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
 
+	plugMgr := volume.VolumePluginMgr{}
+	plugMgr.InitPlugins(ProbeVolumePlugins(), volumetest.NewFakeVolumeHost(tmpDir, nil, nil))
+
+	plug, err := plugMgr.FindPluginByName("kubernetes.io/vsphere_volume")
+	if err != nil {
+		t.Errorf("Can't find the plugin by name")
+	}
+
+	spec := &api.Volume{
+		Name: "vol1",
+		VolumeSource: api.VolumeSource{
+			VsphereVolume: &api.VsphereVirtualDiskVolumeSource{
+				Path:   "[local] test-volume-name.vmdk",
+				FSType: "ext4",
+			},
+		},
+	}
+
+	// Test Mounter
+	fakeManager := &fakePDManager{}
+	fakeMounter := &mount.FakeMounter{}
+	mounter, err := plug.(*vsphereVolumePlugin).newMounterInternal(volume.NewSpecFromVolume(spec), types.UID("poduid"), fakeManager, fakeMounter)
+	if err != nil {
+		t.Errorf("Failed to make a new Mounter: %v", err)
+	}
+	if mounter == nil {
+		t.Errorf("Got a nil Mounter")
+	}
+
+	mntPath := path.Join(tmpDir, "pods/poduid/volumes/kubernetes.io~vsphere_volume/vol1")
+	path := mounter.GetPath()
+	if path != mntPath {
+		t.Errorf("Got unexpected path: %s", path)
+	}
+
+	if err := mounter.SetUp(nil); err != nil {
+		t.Errorf("Expected success, got: %v", err)
+	}
+
+	if !fakeManager.attachCalled {
+		t.Errorf("Attach watch not called")
+	}
+
+	// Test Unmounter
+	fakeManager = &fakePDManager{}
+	unmounter, err := plug.(*vsphereVolumePlugin).newUnmounterInternal("vol1", types.UID("poduid"), fakeManager, fakeMounter)
+	if err != nil {
+		t.Errorf("Failed to make a new Unmounter: %v", err)
+	}
+	if unmounter == nil {
+		t.Errorf("Got a nil Unmounter")
+	}
+
+	if err := unmounter.TearDown(); err != nil {
+		t.Errorf("Expected success, got: %v", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Errorf("TearDown() failed, volume path still exists: %s", path)
+	} else if !os.IsNotExist(err) {
+		t.Errorf("SetUp() failed: %v", err)
+	}
+	if !fakeManager.detachCalled {
+		t.Errorf("Detach watch not called")
+	}
+
+	// Test Provisioner
+	cap := resource.MustParse("100Mi")
+	options := volume.VolumeOptions{
+		Capacity: cap,
+		AccessModes: []api.PersistentVolumeAccessMode{
+			api.ReadWriteOnce,
+		},
+		PersistentVolumeReclaimPolicy: api.PersistentVolumeReclaimDelete,
+	}
+	provisioner, err := plug.(*vsphereVolumePlugin).newProvisionerInternal(options, &fakePDManager{})
+	persistentSpec, err := provisioner.NewPersistentVolumeTemplate()
+	if err != nil {
+		t.Errorf("NewPersistentVolumeTemplate() failed: %v", err)
+	}
+
+	// get 2nd Provisioner - persistent volume controller will do the same
+	provisioner, err = plug.(*vsphereVolumePlugin).newProvisionerInternal(options, &fakePDManager{})
+	err = provisioner.Provision(persistentSpec)
+	if err != nil {
+		t.Errorf("Provision() failed: %v", err)
+	}
+
+	if persistentSpec.Spec.PersistentVolumeSource.VsphereVolume.Path != "[local] test-volume-name.vmdk" {
+		t.Errorf("Provision() returned unexpected path %s", persistentSpec.Spec.PersistentVolumeSource.VsphereVolume.Path)
+	}
+	cap = persistentSpec.Spec.Capacity[api.ResourceStorage]
+	size := cap.Value()
+	if size != 100*1024 {
+		t.Errorf("Provision() returned unexpected volume size: %v", size)
+	}
+
+	// Test Deleter
+	volSpec := &volume.Spec{
+		PersistentVolume: persistentSpec,
+	}
+	deleter, err := plug.(*vsphereVolumePlugin).newDeleterInternal(volSpec, &fakePDManager{})
+	err = deleter.Delete()
+	if err != nil {
+		t.Errorf("Deleter() failed: %v", err)
+	}
 }

@@ -696,8 +696,8 @@ type AzureFileVolumeSource struct {
 
 // Represents a vSphere volume resource.
 type VsphereVirtualDiskVolumeSource struct {
-	// Unique id of the volume used to identify the vSphere volume
-	VolumeID string `json:"volumeID"`
+	// Path that identifies vSphere volume vmdk
+	Path string `json:"volPath"`
 	// Filesystem type to mount.
 	// Must be a filesystem type supported by the host operating system.
 	// Ex. "ext4", "xfs", "ntfs". Implicitly inferred to be "ext4" if unspecified.
