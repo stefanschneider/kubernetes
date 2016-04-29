@@ -43,7 +43,7 @@ type VsphereDiskUtil struct{}
 func (util *VsphereDiskUtil) AttachDisk(vm *vsphereVolumeMounter, globalPDPath string) error {
 	options := []string{}
 
-	// Block execution until any pending detach operations for this PD have completed
+	// Block execution until any pending attach/detach operations for this PD have completed
 	attachDetachMutex.LockKey(vm.volPath)
 	defer attachDetachMutex.UnlockKey(vm.volPath)
 
@@ -135,6 +135,11 @@ func probeAttachedVolume() error {
 
 // Unmounts the device and detaches the disk from the kubelet's host machine.
 func (util *VsphereDiskUtil) DetachDisk(vu *vsphereVolumeUnmounter) error {
+
+	// Block execution until any pending attach/detach operations for this PD have completed
+	attachDetachMutex.LockKey(vu.volPath)
+	defer attachDetachMutex.UnlockKey(vu.volPath)
+
 	globalPDPath := makeGlobalPDPath(vu.plugin.host, vu.volPath)
 	if err := vu.mounter.Unmount(globalPDPath); err != nil {
 		return err

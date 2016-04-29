@@ -129,8 +129,8 @@ func TestPlugin(t *testing.T) {
 		Name: "vol1",
 		VolumeSource: api.VolumeSource{
 			VsphereVolume: &api.VsphereVirtualDiskVolumeSource{
-				Path:   "[local] test-volume-name.vmdk",
-				FSType: "ext4",
+				VolumePath: "[local] test-volume-name.vmdk",
+				FSType:     "ext4",
 			},
 		},
 	}
@@ -204,8 +204,8 @@ func TestPlugin(t *testing.T) {
 		t.Errorf("Provision() failed: %v", err)
 	}
 
-	if persistentSpec.Spec.PersistentVolumeSource.VsphereVolume.Path != "[local] test-volume-name.vmdk" {
-		t.Errorf("Provision() returned unexpected path %s", persistentSpec.Spec.PersistentVolumeSource.VsphereVolume.Path)
+	if persistentSpec.Spec.PersistentVolumeSource.VsphereVolume.VolumePath != "[local] test-volume-name.vmdk" {
+		t.Errorf("Provision() returned unexpected path %s", persistentSpec.Spec.PersistentVolumeSource.VsphereVolume.VolumePath)
 	}
 	cap = persistentSpec.Spec.Capacity[api.ResourceStorage]
 	size := cap.Value()

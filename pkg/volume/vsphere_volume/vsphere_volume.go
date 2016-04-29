@@ -82,7 +82,7 @@ func (plugin *vsphereVolumePlugin) newMounterInternal(spec *volume.Spec, podUID 
 		vvol = spec.PersistentVolume.Spec.VsphereVolume
 	}
 
-	volPath := vvol.Path
+	volPath := vvol.VolumePath
 	fsType := vvol.FSType
 
 	return &vsphereVolumeMounter{
@@ -183,7 +183,7 @@ func (b *vsphereVolumeMounter) SetUp(fsGroup *int64) error {
 
 // SetUp attaches the disk and bind mounts to the volume path.
 func (b *vsphereVolumeMounter) SetUpAt(dir string, fsGroup *int64) error {
-	glog.V(5).Infof("vSphere Volume SetUp %s to %s", b.volPath, dir)
+	glog.V(5).Infof("vSphere volume setup %s to %s", b.volPath, dir)
 
 	// TODO: handle failed mounts here.
 	notmnt, err := b.mounter.IsLikelyNotMountPoint(dir)
@@ -352,7 +352,7 @@ func (plugin *vsphereVolumePlugin) newDeleterInternal(spec *volume.Spec, manager
 	return &vsphereVolumeDeleter{
 		&vsphereVolume{
 			volName: spec.Name(),
-			volPath: spec.PersistentVolume.Spec.VsphereVolume.Path,
+			volPath: spec.PersistentVolume.Spec.VsphereVolume.VolumePath,
 			manager: manager,
 			plugin:  plugin,
 		}}, nil
@@ -392,7 +392,7 @@ func (v *vsphereVolumeProvisioner) Provision(pv *api.PersistentVolume) error {
 	if err != nil {
 		return err
 	}
-	pv.Spec.PersistentVolumeSource.VsphereVolume.Path = vmDiskPath
+	pv.Spec.PersistentVolumeSource.VsphereVolume.VolumePath = vmDiskPath
 	pv.Spec.Capacity = api.ResourceList{
 		api.ResourceName(api.ResourceStorage): resource.MustParse(fmt.Sprintf("%dKi", sizeKB)),
 	}
@@ -418,8 +418,8 @@ func (v *vsphereVolumeProvisioner) NewPersistentVolumeTemplate() (*api.Persisten
 			},
 			PersistentVolumeSource: api.PersistentVolumeSource{
 				VsphereVolume: &api.VsphereVirtualDiskVolumeSource{
-					Path:   volume.ProvisionedVolumeName,
-					FSType: "ext4",
+					VolumePath: volume.ProvisionedVolumeName,
+					FSType:     "ext4",
 				},
 			},
 		},

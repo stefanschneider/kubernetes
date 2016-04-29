@@ -534,12 +534,12 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 	devices := vmDevices.SelectByType(disk)
 	newDevice := devices[len(devices)-1]
 
-	deviceUuid := getVirtualDiskUuid(newDevice)
+	diskUUID = getVirtualDiskUUID(newDevice)
 
-	return devices.Name(devices[len(devices)-1]), deviceUuid, nil
+	return devices.Name(newDevice), diskUUID, nil
 }
 
-func getVirtualDiskUuid(newDevice types.BaseVirtualDevice) string {
+func getVirtualDiskUUID(newDevice types.BaseVirtualDevice) string {
 	vd := newDevice.GetVirtualDevice()
 
 	if b, ok := vd.Backing.(*types.VirtualDiskFlatVer2BackingInfo); ok {
