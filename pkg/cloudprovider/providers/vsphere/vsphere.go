@@ -45,6 +45,13 @@ const ProviderName = "vsphere"
 const ActivePowerState = "poweredOn"
 const DefaultDiskController = "scsi"
 const DefaultSCSIControllerType = "lsilogic-sas"
+const scsiControllerType = "scsi"
+const lsiLogicControllerType = "lsilogic"
+const busLogicControllerType = "buslogic"
+const pvScsiControllerType = "pvscsi"
+const lsiLogicSasControllerType = "lsilogic-sas"
+const SCSIControllerLimit = 4
+const SCSIControllerDeviceLimit = 15
 
 // Controller types that are currently supported for hot attach of disks
 // lsilogic driver type is currently not supported because,when a device gets detached
@@ -547,12 +554,19 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 
 	var diskControllerType = vs.cfg.Disk.SCSIControllerType
 	// find SCSI controller of particular type from VM devices
-	var diskController = getSCSIController(vmDevices, diskControllerType)
+	diskControllers := getSCSIControllers(vmDevices)
+	diskControllersOfRequiredType := getSCSIControllersOfType(vmDevices, diskControllerType)
+	diskController := getAvailableSCSIController(diskControllersOfRequiredType)
 
 	var newSCSICreated = false
 	var newSCSIController types.BaseVirtualDevice
+
 	// creating a scsi controller as there is none found of controller type defined
 	if diskController == nil {
+		if len(diskControllers) >= SCSIControllerLimit {
+			// we reached the maximum number of controllers we can attach
+			return "", "", fmt.Errorf("SCSI Controller Limit of %d has been reached, cannot create another SCSI controller", SCSIControllerLimit)
+		}
 		glog.V(4).Infof("Creating a SCSI controller of %v type", diskControllerType)
 		newSCSIController, err := vmDevices.CreateSCSIController(diskControllerType)
 		if err != nil {
@@ -593,6 +607,12 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 	}
 
 	disk := vmDevices.CreateDisk(diskController, ds.Reference(), vmDiskPath)
+	unitNumber, err := getNextUnitNumber(vmDevices, diskController)
+	*disk.UnitNumber = unitNumber
+	if err != nil {
+		return "", "", err
+	}
+
 	backing := disk.Backing.(*types.VirtualDiskFlatVer2BackingInfo)
 	backing.DiskMode = string(types.VirtualDiskModeIndependent_persistent)
 
@@ -638,6 +658,29 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 	return deviceName, diskUUID, nil
 }
 
+func getNextUnitNumber(devices object.VirtualDeviceList, c types.BaseVirtualController) (int32, error) {
+    key := c.GetVirtualController().Key
+
+    var unitNumbers [16]bool
+    unitNumbers[7] = true
+
+    for _, device := range devices {
+        d := device.GetVirtualDevice()
+
+        if d.ControllerKey == key {
+            if d.UnitNumber != nil  {
+                unitNumbers[*d.UnitNumber] = true
+            }
+        }
+    }
+    for i, taken := range unitNumbers {
+        if !taken {
+            return int32(i), nil
+        }
+    }
+    return -1, fmt.Errorf("[ERROR] getNextUnitNumber - controller is full")
+}
+
 func getSCSIController(vmDevices object.VirtualDeviceList, scsiType string) *types.VirtualController {
 	// get virtual scsi controller of passed argument type
 	for _, device := range vmDevices {
@@ -646,6 +689,44 @@ func getSCSIController(vmDevices object.VirtualDeviceList, scsiType string) *typ
 			if c, ok := device.(types.BaseVirtualController); ok {
 				return c.GetVirtualController()
 			}
+		}
+	}
+	return nil
+}
+
+func getSCSIControllersOfType(vmDevices object.VirtualDeviceList, scsiType string) []*types.VirtualController {
+	// get virtual scsi controllers of passed argument type
+	var scsiControllers []*types.VirtualController
+	for _, device := range vmDevices {
+		devType := vmDevices.Type(device)
+		if devType == scsiType {
+			if c, ok := device.(types.BaseVirtualController); ok {
+				scsiControllers = append(scsiControllers, c.GetVirtualController())
+			}
+		}
+	}
+	return scsiControllers
+}
+
+func getSCSIControllers(vmDevices object.VirtualDeviceList) []*types.VirtualController {
+	// get virtual scsi controllers of all supported types
+	var scsiControllers []*types.VirtualController
+	for _, device := range vmDevices {
+		devType := vmDevices.Type(device)
+		switch devType {
+		case scsiControllerType, lsiLogicControllerType, busLogicControllerType, pvScsiControllerType, lsiLogicSasControllerType:
+			if c, ok := device.(types.BaseVirtualController); ok {
+				scsiControllers = append(scsiControllers, c.GetVirtualController())
+			}
+		}
+	}
+	return scsiControllers
+}
+
+func getAvailableSCSIController(scsiControllers []*types.VirtualController) *types.VirtualController {
+	for _, controller := range scsiControllers {
+		if len(controller.Device) < SCSIControllerDeviceLimit {
+			return controller
 		}
 	}
 	return nil
