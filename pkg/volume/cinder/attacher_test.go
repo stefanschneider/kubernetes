@@ -72,6 +72,8 @@ type testcase struct {
 	// Expected return of the test
 	expectedDevice string
 	expectedError  error
+
+	shouldTrustDevicePath bool
 }
 
 func TestAttachDetach(t *testing.T) {
@@ -413,6 +415,10 @@ func (testcase *testcase) GetAutoLabelsForPD(name string) (map[string]string, er
 
 func (testcase *testcase) Instances() (cloudprovider.Instances, bool) {
 	return &instances{testcase.instanceID}, true
+}
+
+func (testcase *testcase) ShouldTrustDevicePath() bool {
+	return testcase.shouldTrustDevicePath
 }
 
 // Implementation of fake cloudprovider.Instances
