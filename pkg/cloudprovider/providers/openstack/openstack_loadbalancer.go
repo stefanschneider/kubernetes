@@ -1125,7 +1125,9 @@ func (lbaas *LbaasV2) EnsureLoadBalancerDeleted(clusterName string, service *api
 		}
 
 		for _, listener := range listenerList {
-			listenerIDs = append(listenerIDs, listener.ID)
+			if len(listener.Loadbalancers) > 0 && listener.Loadbalancers[0].ID == loadbalancer.ID {
+				listenerIDs = append(listenerIDs, listener.ID)
+			}
 		}
 
 		return true, nil
@@ -1144,8 +1146,13 @@ func (lbaas *LbaasV2) EnsureLoadBalancerDeleted(clusterName string, service *api
 		}
 
 		for _, pool := range poolsList {
-			poolIDs = append(poolIDs, pool.ID)
-			monitorIDs = append(monitorIDs, pool.MonitorID)
+			for _, listenerID := range listenerIDs {
+				if len(pool.Listeners) > 0 && pool.Listeners[0].ID == listenerID{
+					poolIDs = append(poolIDs, pool.ID)
+					monitorIDs = append(monitorIDs, pool.MonitorID)
+					break
+				}
+			}
 		}
 
 		return true, nil
