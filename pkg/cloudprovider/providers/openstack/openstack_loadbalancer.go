@@ -1136,10 +1136,10 @@ func (lbaas *LbaasV2) EnsureLoadBalancerDeleted(clusterName string, service *api
 
 	// get all members associated with each poolIDs
 	var memberIDs []string
-	for _, pool := range poolIDs {
-		membersList, err := getMembersByPoolID(lbaas.network, pool)
+	for _, poolID := range poolIDs {
+		membersList, err := getMembersByPoolID(lbaas.network, poolID)
 		if err != nil && !isNotFound(err) {
-			return fmt.Errorf("Error getting pool members %s: %v", pool, err)
+			return fmt.Errorf("Error getting pool members %s: %v", poolID, err)
 		}
 		for _, member := range membersList {
 			memberIDs = append(memberIDs, member.ID)
