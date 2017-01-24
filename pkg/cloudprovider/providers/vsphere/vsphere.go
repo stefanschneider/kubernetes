@@ -519,6 +519,7 @@ func (i *Instances) NodeAddresses(nodeName k8stypes.NodeName) ([]api.NodeAddress
 	api.AddToNodeAddresses(&addrs,
 		api.NodeAddress{
 			Address: mvm.Guest.IpAddress,
+			Type:    api.NodeInternalIP,
 		},
 	)
 
