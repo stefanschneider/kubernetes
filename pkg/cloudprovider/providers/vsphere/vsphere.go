@@ -100,8 +100,6 @@ type VSphere struct {
 	cfg    *VSphereConfig
 	// InstanceID of the server where this VSphere object is instantiated.
 	localInstanceID string
-	// Cluster that VirtualMachine belongs to
-	clusterName string
 }
 
 type VSphereConfig struct {
@@ -209,7 +207,7 @@ func init() {
 // Will attempt to determine the machine's name via it's UUID in this precedence order, failing if neither have a UUID:
 // * cloud config value VMUUID
 // * sysfs entry
-func getVMName(client *govmomi.Client, cfg *VSphereConfig) (string, string, error) {
+func getVMName(client *govmomi.Client, cfg *VSphereConfig) (string, error) {
 	var vmUUID string
 
 	if cfg.Global.VMUUID != "" {
@@ -227,7 +225,7 @@ func getVMName(client *govmomi.Client, cfg *VSphereConfig) (string, string, erro
 	}
 
 	if vmUUID == "" {
-		return "", "", fmt.Errorf("unable to determine machine ID from cloud configuration or sysfs")
+		return "", fmt.Errorf("unable to determine machine ID from cloud configuration or sysfs")
 	}
 
 	// Create context
@@ -240,7 +238,7 @@ func getVMName(client *govmomi.Client, cfg *VSphereConfig) (string, string, erro
 	// Fetch and set data center
 	dc, err := f.Datacenter(ctx, cfg.Global.Datacenter)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	f.SetDatacenter(dc)
 
@@ -248,33 +246,16 @@ func getVMName(client *govmomi.Client, cfg *VSphereConfig) (string, string, erro
 
 	svm, err := s.FindByUuid(ctx, dc, strings.ToLower(strings.TrimSpace(vmUUID)), true, nil)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 
 	var vm mo.VirtualMachine
-	err = s.Properties(ctx, svm.Reference(), []string{"name", "resourcePool"}, &vm)
+	err = s.Properties(ctx, svm.Reference(), []string{"name"}, &vm)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 
-	var cluster string
-	if vm.ResourcePool != nil {
-		// Extract the Cluster Name if VM belongs to a ResourcePool
-		var rp mo.ResourcePool
-		err = s.Properties(ctx, *vm.ResourcePool, []string{"parent"}, &rp)
-		if err == nil {
-			var ccr mo.ComputeResource
-			err = s.Properties(ctx, *rp.Parent, []string{"name"}, &ccr)
-			if err == nil {
-				cluster = ccr.Name
-			} else {
-				glog.Warningf("VM %s, does not belong to a vSphere Cluster, will not have FailureDomain label", vm.Name)
-			}
-		} else {
-			glog.Warningf("VM %s, does not belong to a vSphere Cluster, will not have FailureDomain label", vm.Name)
-		}
-	}
-	return vm.Name, cluster, nil
+	return vm.Name, nil
 }
 
 func newVSphere(cfg VSphereConfig) (*VSphere, error) {
@@ -296,7 +277,7 @@ func newVSphere(cfg VSphereConfig) (*VSphere, error) {
 		return nil, err
 	}
 
-	id, cluster, err := getVMName(c, &cfg)
+	id, err := getVMName(c, &cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +286,6 @@ func newVSphere(cfg VSphereConfig) (*VSphere, error) {
 		client:          c,
 		cfg:             &cfg,
 		localInstanceID: id,
-		clusterName:     cluster,
 	}
 	runtime.SetFinalizer(&vs, logout)
 
@@ -534,21 +514,6 @@ func (i *Instances) NodeAddresses(nodeName k8stypes.NodeName) ([]api.NodeAddress
 			)
 		}
 	}
-
-	// ensure that the "primary" IP address of the machine is always included, since the above
-	// guest.net call is limited to 16 unsorted interfaces and the e.g. eth0 iface may not have
-	// been included.
-	err = getVirtualMachineManagedObjectReference(ctx, i.client, vm, "guest.ipAddress", &mvm)
-	if err != nil {
-		return nil, err
-	}
-	api.AddToNodeAddresses(&addrs,
-		api.NodeAddress{
-			Address: mvm.Guest.IpAddress,
-			Type:    api.NodeInternalIP,
-		},
-	)
-
 	return addrs, nil
 }
 
@@ -656,20 +621,9 @@ func (vs *VSphere) LoadBalancer() (cloudprovider.LoadBalancer, bool) {
 
 // Zones returns an implementation of Zones for Google vSphere.
 func (vs *VSphere) Zones() (cloudprovider.Zones, bool) {
-	glog.V(1).Info("Claiming to support Zones")
+	glog.V(1).Info("The vSphere cloud provider does not support zones")
 
-	return vs, true
-}
-
-func (vs *VSphere) GetZone() (cloudprovider.Zone, error) {
-	glog.V(1).Infof("Current datacenter is %v, cluster is %v", vs.cfg.Global.Datacenter, vs.clusterName)
-
-	// The clusterName is determined from the VirtualMachine ManagedObjectReference during init
-	// If the VM is not created within a Cluster, this will return empty-string
-	return cloudprovider.Zone{
-		Region:        vs.cfg.Global.Datacenter,
-		FailureDomain: vs.clusterName,
-	}, nil
+	return nil, false
 }
 
 // Routes returns a false since the interface is not supported for vSphere.
