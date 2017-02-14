@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"net"
 	"net/url"
 	"path"
 	"path/filepath"
@@ -220,7 +219,7 @@ func getVMName(client *govmomi.Client, cfg *VSphereConfig) (string, error) {
 		// This needs root privileges on the host, and will fail otherwise.
 		vmUUIDbytes, err := ioutil.ReadFile("/sys/devices/virtual/dmi/id/product_uuid")
 		if err != nil {
-			return "", "", err
+			return "", err
 		}
 
 		vmUUID = string(vmUUIDbytes)
